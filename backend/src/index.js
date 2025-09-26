@@ -52,6 +52,41 @@ export default {
   // --- BEGIN data proxy route ---
   {
     const url = new URL(req.url);
+
+    // ---- /data/* : JSON/GeoJSON depuis S3 privé (URL signée) ----
+    if (url.pathname.startsWith("/data/")) {
+      const key = decodeURIComponent(url.pathname.slice(6));
+      const s3Path = `data/${key}`;
+
+      const fwd = new Headers();
+      for (const h of ["range","if-none-match","if-modified-since","accept-encoding"]) {
+        const v = req.headers.get(h);
+        if (v) fwd.set(h, v);
+      }
+
+      let upstream;
+      try {
+        // Pattern A présent dans ce repo
+        const target = new URL("/" + s3Path, env.ORIGIN_BASE_PRIVATE).toString();
+        upstream = await fetchS3Private(new Request(target, { method: "GET", headers: fwd }), env);
+      } catch (e) {
+        // Pattern B aussi présent dans ce repo
+        upstream = await fetchS3Private(env.ORIGIN_BASE_PRIVATE.replace(/\/?$/, "/"), s3Path, env, fwd);
+      }
+
+      const h = new Headers(upstream.headers);
+      h.set("access-control-allow-origin", "*");
+      if (!h.has("cache-control")) {
+        h.set("cache-control", "public, max-age=86400, stale-while-revalidate=604800, no-transform");
+      }
+      if (!h.has("x-debug-url")) {
+        h.set("x-debug-url", `(signed) ${s3Path}`);
+      }
+
+      return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: h });
+    }
+    // ---- fin /data/* ----
+
     if (url.pathname.startsWith('/data/')) {
       return proxyDataFromS3(req, env, url);
     }
@@ -201,7 +236,7 @@ async function fetchDataFromS3Signed(request, env, url) {
 
   // IMPORTANT : utiliser la fonction de présignature déjà importée
   // (import { fetchS3Private } from "./s3-presign.js";)
-  const upstream = await fetchS3Private(new Request(target, { method: 'GET', headers: fwd }), env);
+  const upstream = await fetchS3Private(new Request(target, { method: request.method, headers: fwd }), env);
 
   // Normalisation des headers (CORS + cache + type JSON si manquant)
   const h = new Headers(upstream.headers);
