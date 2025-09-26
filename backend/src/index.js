@@ -49,6 +49,14 @@ async function fetchPrivate(env, path, req) {
 }
 export default {
   async fetch(req, env) {
+  // --- BEGIN data proxy route ---
+  {
+    const url = new URL(req.url);
+    if (url.pathname.startsWith(\x27/data/\x27)) {
+      return proxyDataFromS3(req, env, url);
+    }
+  }
+  // --- END data proxy route ---
     const url = new URL(req.url);
     // === EMBEDDED SPRITES START ===
         // === EMBEDDED SPRITES (no S3 dependency) ===
@@ -141,3 +149,36 @@ export default {
     return new Response("Not Found", { status: 404 });
   },
 };
+
+// === helper pour /data/* depuis le bucket privé Scaleway ===
+async function proxyDataFromS3(request, env, url) {
+  // ORIGIN_BASE_PRIVATE doit ressembler à:
+  // https://s3.fr-par.scw.cloud/idf-maps-storage
+  const base = env.ORIGIN_BASE_PRIVATE;
+  const key = url.pathname.replace(/^\/data\//, "");
+  const parts = key.split('/').map(encodeURIComponent).join('/');
+  const target = base.replace(/\/$/, '') + '/data/' + parts;
+
+  // On forward quelques headers utiles (range, ETag/If-*)
+  const fwdHeaders = new Headers();
+  for (const h of ['range','if-none-match','if-modified-since','accept-encoding']) {
+    const v = request.headers.get(h);
+    if (v) fwdHeaders.set(h, v);
+  }
+
+  const upstream = await fetch(target, { method: 'GET', headers: fwdHeaders });
+
+  // Prépare la réponse côté edge: CORS + cache + trace
+  const respHeaders = new Headers(upstream.headers);
+  respHeaders.set('access-control-allow-origin', '*');
+  if (!respHeaders.has('cache-control')) {
+    respHeaders.set('cache-control', 'public, max-age=86400, stale-while-revalidate=604800, no-transform');
+  }
+  respHeaders.set('x-debug-url', target);
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: respHeaders
+  });
+}
