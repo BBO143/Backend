@@ -18,3 +18,4 @@ ROUTE_STYLE = "private"   # style.json -> privé
 ROUTE_TILES = "private"   # tiles -> privé
 ROUTE_FONTS = "private"
 
+ROUTE_DATA = "private"
