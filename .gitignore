@@ -1,0 +1,65 @@
+# OS / IDE
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# Node / CF Workers / Builds
+node_modules/
+dist/
+build/
+out/
+.wrangler/
+.parcel-cache/
+.next/
+.turbo/
+
+# Python
+.venv/
+venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+
+# Terraform / IaC
+.terraform/
+.terragrunt-cache/
+terraform.tfstate
+terraform.tfstate.backup
+*.tfstate*
+crash.log
+
+# Mobile/Java
+.gradle/
+Pods/
+DerivedData/
+target/
+vendor/
+
+# Archives / Binaires lourds / médias volumineux
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.dmg
+*.pkg
+*.mp4
+*.mov
+*.pdf
+*.pbf
+*.mbtiles
+*.db
+*.sqlite
+*.bin
+
+# Secrets (ne pas versionner)
+.env
+.env.*
+*.key
+*.pem
+*SECRET*
+*TOKEN*
+*KEY*
+*CREDENTIAL*
+secrets.*

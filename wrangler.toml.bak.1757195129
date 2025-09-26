@@ -1,0 +1,10 @@
+name = "idf-tiles"
+main = "src/index.js"
+compatibility_date = "2024-09-01"
+workers_dev = true
+
+[vars]
+BUCKET_BASE = "https://idf-maps-storage.s3.fr-par.scw.cloud"
+CACHE_TTL = "31536000"
+SPRITE_URL = "https://demotiles.maplibre.org/styles/osm-bright/sprite"
+GLYPHS_URL = "https://demotiles.maplibre.org/fonts/{fontstack}/{range}.pbf"

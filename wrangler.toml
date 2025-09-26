@@ -1,0 +1,11 @@
+name = "idf-tiles"
+main = "src/index.js"
+compatibility_date = "2024-09-01"
+workers_dev = true
+
+[vars]
+STYLE_ORIGIN = "https://idf-maps-storage.s3.fr-par.scw.cloud/style.json"
+BUCKET_BASE  = "https://idf-maps-storage.s3.fr-par.scw.cloud"
+SPRITE_URL   = "https://idf-tiles.idf-maps-007.workers.dev/sprite"
+GLYPHS_URL   = "https://idf-tiles.idf-maps-007.workers.dev/fonts/{fontstack}/{range}.pbf"
+TILES_HMAC_SECRET = "gG0lXvuduW/dL/nQktT+8822zHDP6xg27qzpvpf8S9c="

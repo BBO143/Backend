@@ -1,0 +1,111 @@
+// src/index.js — Worker Cloudflare pour servir des tuiles IDF depuis Scaleway
+export default {
+  async fetch(request, env, ctx) {
+    const inUrl = new URL(request.url);
+
+    // Normalisation des chemins (évite 0\/0\/0 ou 0//0//0)
+    let cleanPath = inUrl.pathname
+      .replace(/\\\//g, "/")   // "\/" -> "/"
+      .replace(/\/{2,}/g, "/"); // "//" -> "/"
+
+    const url = new URL(inUrl.toString());
+    url.pathname = cleanPath;
+
+    // 1) style.json → on renvoie le style de base en injectant nos URLs signées
+    if (url.pathname === "/style.json") {
+      const styleResp = await fetch(`${env.BUCKET_BASE}/style.json`);
+      if (!styleResp.ok) {
+        return new Response("style.json not found", { status: 502 });
+      }
+      const style = await styleResp.json();
+
+      // Génère une URL de tuile signée
+      const exp = Math.floor(Date.now() / 1000) + 600; // valide 10 min
+      const sig = await sign(`${exp}`, env.TILE_TOKEN_SECRET);
+      const tileUrl = `${inUrl.origin}/tiles/{z}/{x}/{y}.pbf?exp=${exp}&sig=${sig}`;
+
+      style.sources.openmaptiles.tiles = [tileUrl];
+      style.sprite = env.SPRITE_URL;
+      style.glyphs = env.GLYPHS_URL;
+
+      return json(style, {
+        "cache-control": "public, max-age=60"
+      });
+    }
+
+    // 2) tuiles
+    if (url.pathname.startsWith("/tiles/")) {
+      const qs = new URLSearchParams(url.search);
+      const exp = parseInt(qs.get("exp") || "0", 10);
+      const sig = qs.get("sig") || "";
+
+      if (!exp || Date.now() / 1000 > exp) {
+        return new Response("URL expired", { status: 403 });
+      }
+      const expected = await sign(`${exp}`, env.TILE_TOKEN_SECRET);
+      if (sig !== expected) {
+        return new Response("Bad signature", { status: 403 });
+      }
+
+      const tilePath = url.pathname.replace(/^\/tiles\//, "");
+      const origin = `${env.BUCKET_BASE}/${tilePath}`;
+
+      // Filtrage simple (IDF uniquement)
+      const [z, x, yFile] = tilePath.split("/");
+      const y = yFile.replace(".pbf", "");
+      if (z && x && y) {
+        const zi = parseInt(z), xi = parseInt(x), yi = parseInt(y);
+        if (!checkIDF(zi, xi, yi)) {
+          return new Response("tile outside IDF bbox", { status: 400 });
+        }
+      }
+
+      const r = await fetch(origin, {
+        headers: { "accept-encoding": "gzip" }
+      });
+      return new Response(r.body, r);
+    }
+
+    // Fallback
+    return new Response("Not found", { status: 404 });
+  }
+};
+
+// Helpers
+function json(obj, extraHeaders = {}) {
+  const headers = { "content-type": "application/json", ...extraHeaders };
+  return new Response(JSON.stringify(obj), { headers });
+}
+
+// Signature HMAC-SHA256 base64url
+async function sign(payload, secret) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const data = enc.encode(payload);
+  const sigBuf = await crypto.subtle.sign("HMAC", key, data);
+  return toBase64Url(new Uint8Array(sigBuf));
+}
+
+function toBase64Url(bytes) {
+  let s = ""; for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+// Vérifie si la tuile est dans l'IDF
+function checkIDF(z, x, y) {
+  function inRange(v, a, b){ return v>=a && v<=b; }
+  const ranges = {
+    8:  {x:[126,132],  y:[85, 90]},
+    9:  {x:[252,265],  y:[171,181]},
+    10: {x:[505,531],  y:[342,363]},
+    11: {x:[1011,1063],y:[685,727]},
+    12: {x:[2023,2127],y:[1371,1455]},
+    13: {x:[4047,4255],y:[2743,2911]},
+    14: {x:[8095,8511],y:[5487,5823]}
+  };
+  const r = ranges[z];
+  if (!r) return true; // pas de restriction
+  return inRange(x, r.x[0], r.x[1]) && inRange(y, r.y[0], r.y[1]);
+}
