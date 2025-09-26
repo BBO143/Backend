@@ -1,0 +1,19 @@
+# Node / Wrangler / build
+node_modules/
+dist/
+.bundle/
+.wrangler/
+.eslintcache
+*.log
+
+# Env / secrets (ne pas committer tes tokens)
+.env
+.env.*
+wrangler.toml.bak.*
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/

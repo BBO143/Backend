@@ -1,0 +1,103 @@
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    // Simple router
+    if (url.pathname === "/style.json") {
+      return styleHandler(request, env);
+    }
+    if (url.pathname.startsWith("/fonts/")) {
+      return fontsHandler(request, env);
+    }
+    if (url.pathname.startsWith("/tiles/")) {
+      return tilesPassThrough(request, env); // laissé tel quel si déjà en place
+    }
+    return new Response("Not found", { status: 404 });
+  }
+};
+
+async function styleHandler(request, env) {
+  // Récupère le style de base public (non signé) depuis Scaleway
+  const baseUrl = env.ASSETS_BASE_URL; // ex: https://s3.fr-par.scw.cloud/idf-assets
+  const res = await fetch(`${baseUrl}/style/style.base.json`, { cf: { cacheTtl: 120 }});
+  if (!res.ok) return new Response("style.base.json not found", { status: 502 });
+  const style = await res.json();
+
+  // Force glyphs -> cette même origine
+  const origin = new URL(request.url).origin;
+  style.glyphs = `${origin}/fonts/{fontstack}/{range}.pbf`;
+
+  // Signe systématiquement chaque URL de tiles[] avec exp & sig
+  const ttl = parseInt(env.TILE_TTL || "3600", 10);
+  const now = Math.floor(Date.now()/1000);
+  const exp = now + ttl;
+
+  const key = await importKey(env.HMAC_KEY);
+
+  if (style.sources) {
+    for (const [k, src] of Object.entries(style.sources)) {
+      if (Array.isArray(src.tiles)) {
+        src.tiles = await Promise.all(
+          src.tiles.map(async (t) => {
+            // assure que les tiles pointent bien sur ce worker (si besoin)
+            const u = new URL(t, origin);
+            if (!u.host) u.host = new URL(origin).host;
+            if (!u.protocol) u.protocol = new URL(origin).protocol;
+            // strip query existante, set exp, sig
+            u.search = "";
+            u.searchParams.set("exp", String(exp));
+            const sig = await hmacHex(key, u.pathname + "?exp=" + exp);
+            u.searchParams.set("sig", sig);
+            return u.toString();
+          })
+        );
+      }
+    }
+  }
+
+  return new Response(JSON.stringify(style), {
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": env.CACHE_STYLE || "public,max-age=60"
+    }
+  });
+}
+
+// Proxy des glyphs -> objets publics dans Scaleway
+async function fontsHandler(request, env) {
+  const base = env.ASSETS_BASE_URL; // public
+  const u = new URL(request.url);
+  const upstream = `${base}${u.pathname}`;
+  const r = await fetch(upstream, { cf: { cacheTtl: 86400 }});
+  if (!r.ok) return new Response("Font not found", { status: 404 });
+  const h = new Headers(r.headers);
+  h.set("cache-control", env.CACHE_FONTS || "public,max-age=31536000,immutable");
+  // force content-type correct si absent
+  if (!h.get("content-type")) h.set("content-type", "application/x-protobuf");
+  return new Response(r.body, { status: 200, headers: h });
+}
+
+// (optionnel) pass-through des tiles si déjà implémenté ailleurs
+async function tilesPassThrough(request, env) {
+  // Ici on se contente de vérifier la signature; l’implémentation de fetch en amont reste votre logique existante.
+  const url = new URL(request.url);
+  const exp = parseInt(url.searchParams.get("exp") || "0", 10);
+  const sig = url.searchParams.get("sig") || "";
+  if (!exp || exp < Math.floor(Date.now()/1000)) return new Response("Expired", { status: 403 });
+
+  const key = await importKey(env.HMAC_KEY);
+  const expected = await hmacHex(key, url.pathname + "?exp=" + exp);
+  if (sig !== expected) return new Response("Forbidden", { status: 403 });
+
+  // TODO: adapter ici vers votre backend de tuiles (Scaleway privé, etc.)
+  return new Response("OK (tiles upstream not configured in this snippet)", { status: 501 });
+}
+
+async function importKey(secret) {
+  const raw = new TextEncoder().encode(secret);
+  return crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+}
+async function hmacHex(key, msg) {
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(msg));
+  const bytes = new Uint8Array(mac);
+  return [...bytes].map(b => b.toString(16).padStart(2,"0")).join("");
+}

@@ -1,0 +1,97 @@
+{
+  "version": 8,
+  "name": "IDF Minimal",
+  "sprite": "https://idf-tiles.idf-maps-007.workers.dev/sprite",
+  "glyphs": "https://idf-tiles.idf-maps-007.workers.dev/fonts/{fontstack}/{range}.pbf",
+  "sources": {
+    "openmaptiles": {
+      "type": "vector",
+      "tiles": [
+        "https://idf-tiles.idf-maps-007.workers.dev/tiles/{z}/{x}/{y}.pbf?exp=1757229014&sig=_zpgs-j5SFKNzJ87T9pPW4P2yXStGZF1jl3dpBBVQxE"
+      ],
+      "minzoom": 0,
+      "maxzoom": 14,
+      "attribution": "© OpenStreetMap contributors"
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "#f8f8f8"
+      }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "water",
+      "paint": {
+        "fill-color": "#a0c8f0"
+      }
+    },
+    {
+      "id": "landuse",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "landuse",
+      "paint": {
+        "fill-color": "#f3f3f1"
+      }
+    },
+    {
+      "id": "park",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "park",
+      "paint": {
+        "fill-color": "#cfe8b0"
+      }
+    },
+    {
+      "id": "building",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "building",
+      "paint": {
+        "fill-color": "#e0e0e0"
+      }
+    },
+    {
+      "id": "roads",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "paint": {
+        "line-color": "#cfcfcf",
+        "line-width": 1.1
+      }
+    },
+    {
+      "id": "place-label",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "place",
+      "layout": {
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "name:latin"
+          ],
+          [
+            "get",
+            "name"
+          ]
+        ],
+        "text-size": 12
+      },
+      "paint": {
+        "text-color": "#333",
+        "text-halo-color": "#fff",
+        "text-halo-width": 1
+      }
+    }
+  ]
+}

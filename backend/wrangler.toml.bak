@@ -1,0 +1,21 @@
+name = "idf-tiles"
+main = "src/index.js"
+compatibility_date = "2024-09-07"
+workers_dev = true
+
+
+[vars]
+# Origines S3 (PARPAR = fr-par)
+ORIGIN_BASE_PRIVATE = "https://s3.fr-par.scw.cloud/idf-maps-storage"  # PRIVÉ (tiles + style.json)
+# # ORIGIN_BASE_PUBLIC  = "https://s3.fr-par.scw.cloud/idf-assets"         # PUBLIC (fonts)
+
+S3_REGION   = "fr-par"
+S3_ENDPOINT = "https://s3.fr-par.scw.cloud"
+
+# Routage demandé
+ROUTE_STYLE = "private"   # style.json -> privé
+ROUTE_TILES = "private"   # tiles -> privé
+ROUTE_FONTS = "private"
+
+[vars]
+STYLE_OBJECT = "style/style.light.v1.json"

@@ -1,0 +1,87 @@
+// === SigV4 (pré-signature en query) ===
+export async function fetchS3Private(env, bucket, key, extraRespHeaders, debug=false) {
+  const method  = "GET";
+  const host    = env.SCW_ENDPOINT_HOST;   // ex: s3.fr-par.scw.cloud
+  const region  = env.SCW_REGION;          // ex: fr-par
+  const service = "s3";
+
+  const toHex = (bytes) => [...bytes].map(b => b.toString(16).padStart(2,"0")).join("");
+  const encRFC3986 = (s) => encodeURIComponent(s).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+
+  async function sha256Hex(s) {
+    const data = new TextEncoder().encode(s);
+    const hash = await crypto.subtle.digest("SHA-256", data);
+    return toHex(new Uint8Array(hash));
+  }
+  async function hmac(keyBytes, msg) {
+    const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const sig = await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(msg));
+    return new Uint8Array(sig);
+  }
+  async function getSigningKey(secret, date, region, service) {
+    const enc = new TextEncoder();
+    const kDate    = await hmac(enc.encode("AWS4" + secret), date);
+    const kRegion  = await hmac(kDate, region);
+    const kService = await hmac(kRegion, service);
+    const kSigning = await hmac(kService, "aws4_request");
+    return kSigning;
+  }
+
+  const now = new Date();
+  const amzDate   = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z"); // YYYYMMDDTHHMMSSZ
+  const shortDate = amzDate.slice(0,8);
+
+  // Path-style
+  const canonicalUri = `/${bucket}/${key}`;
+  const signedHeaders = "host";
+  const credentialScope = `${shortDate}/${region}/${service}/aws4_request`;
+  const credential = `${env.SCW_S3_ACCESS_KEY_ID}/${credentialScope}`;
+
+  // Query params exigés pour presign
+  const params = new URLSearchParams();
+  params.set("X-Amz-Algorithm", "AWS4-HMAC-SHA256");
+  params.set("X-Amz-Credential", credential);
+  params.set("X-Amz-Date", amzDate);
+  params.set("X-Amz-Expires", "300");
+  params.set("X-Amz-SignedHeaders", signedHeaders);
+
+  // Canonical query triée + encodage strict
+  const canonicalQuery = [...params.entries()]
+    .map(([k,v]) => `${encRFC3986(k)}=${encRFC3986(v)}`)
+    .sort().join("&");
+
+  // En presign, on NE signe que "host"
+  const canonicalHeaders = `host:${host}\n`;
+  const payloadHash = "UNSIGNED-PAYLOAD";
+
+  const canonicalRequest = [
+    "GET",
+    canonicalUri,
+    canonicalQuery,
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash
+  ].join("\n");
+
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    credentialScope,
+    await sha256Hex(canonicalRequest)
+  ].join("\n");
+
+  const signingKey = await getSigningKey(env.SCW_S3_SECRET_ACCESS_KEY, shortDate, region, service);
+  const signature  = toHex(await hmac(signingKey, stringToSign));
+
+  const presignedUrl = `https://${host}${canonicalUri}?${canonicalQuery}&X-Amz-Signature=${signature}`;
+
+  if (debug) {
+    const b64 = s => btoa(unescape(encodeURIComponent(s)));
+    extraRespHeaders.set("x-debug-url", presignedUrl);
+    extraRespHeaders.set("x-debug-cr-b64", b64(canonicalRequest));
+    extraRespHeaders.set("x-debug-sts-b64", b64(stringToSign));
+  }
+
+  // Aucun header d'auth ici : tout est dans l'URL
+  return fetch(presignedUrl, { method: "GET", cf: { cacheEverything: false } });
+}

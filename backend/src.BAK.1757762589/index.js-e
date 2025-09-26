@@ -1,0 +1,180 @@
+export default {
+  async fetch(request, env, ctx) {
+    try {
+      const url = new URL(request.url);
+      const pathname = url.pathname;
+
+      // Routes
+      if (pathname === "/style.json") {
+        return handleStyle(url, env);
+      }
+      if (pathname.startsWith("/fonts/")) {
+        // glyphs publics -> simple proxy vers S3 public (mêmes caches)
+        const upstream = new URL(env.ASSETS_BASE_URL + pathname);
+        return fetch(upstream.toString(), {
+          cf: { cacheEverything: true },
+          headers: { "cache-control": env.CACHE_FONTS }
+        });
+      }
+      if (pathname.startsWith("/tiles/")) {
+        return handleTileGet(url, env);
+      }
+
+      return new Response("Not found", { status: 404 });
+    } catch (e) {
+      return new Response("Worker error: " + (e && e.message || e), { status: 500 });
+    }
+  }
+};
+
+// -------- style.json (injecte URLs de tiles signées côté Worker) ----------
+async function handleStyle(url, env) {
+  const styleUrl = env.ASSETS_BASE_URL + "/style/style.base.json";
+  const res = await fetch(styleUrl, { cf: { cacheEverything: true } });
+  if (!res.ok) return new Response("Upstream style error", { status: 502 });
+
+  const style = await res.json();
+
+  // glyphs via le Worker
+  style.glyphs = `${url.origin}/fonts/{fontstack}/{range}.pbf`;
+
+  // tiles via le Worker (exp/sig placeholder "unsigned" – vérifié côté /tiles)
+  const exp = Math.floor(Date.now()/1000) + parseInt(env.TILE_TTL || "3600", 10);
+  const tileUrl = `${url.origin}/tiles/{z}/{x}/{y}.pbf?exp=${exp}&sig=unsigned`;
+
+  // remplace toutes les sources .tiles
+  if (style.sources) {
+    for (const [k, v] of Object.entries(style.sources)) {
+      if (Array.isArray(v.tiles) && v.tiles.length) {
+        v.tiles = [tileUrl];
+      }
+    }
+  }
+  return new Response(JSON.stringify(style), {
+    headers: {
+      "content-type": "application/json",
+      "cache-control": env.CACHE_STYLE
+    }
+  });
+}
+
+// -------- tiles (présignature S3 VHost + proxy) ----------
+async function handleTileGet(url, env) {
+  const debug = url.searchParams.get("debug") === "1";
+  const extra = new Headers();
+
+  // 1) contrôle exp/sig "unsigned" (on exige juste exp futur ici)
+  const exp = parseInt(url.searchParams.get("exp") || "0", 10);
+  const sig = url.searchParams.get("sig") || "";
+  if (!exp || exp < Math.floor(Date.now()/1000)) {
+    return new Response("Expired", { status: 403, headers: { "cache-control": "no-store" } });
+  }
+  if (sig !== "unsigned") {
+    return new Response("Forbidden", { status: 403, headers: { "cache-control": "no-store" } });
+  }
+
+  // 2) Clé objet S3: tout ce qui suit /tiles/
+  //   URL Worker = /tiles/z/x/y.pbf  => key = tiles/z/x/y.pbf
+  const key = url.pathname.replace(/^\/tiles\//, "");
+  const host = env.SCW_ENDPOINT_HOST;                  // idf-assets.s3.fr-par.scw.cloud (VHost)
+  const region = env.SCW_REGION;                       // fr-par
+  const service = "s3";
+  const canonicalUri = "/" + key;                      // pas de /{bucket} ici !
+
+  // 3) Pré-signature SigV4 (GET présigné, UNSIGNED-PAYLOAD)
+  const now = new Date();
+  const amzDate = toAmzDate(now);          // YYYYMMDDThhmmssZ
+  const shortDate = amzDate.slice(0, 8);   // YYYYMMDD
+  const accessKey = env.SCW_S3_ACCESS_KEY_ID;
+  const secretKey = env.SCW_S3_SECRET_ACCESS_KEY;
+
+  // Query presign (tri ASCII). Credential doit être URL-encodé UNE fois.
+  const credential = `${accessKey}/${shortDate}/${region}/${service}/aws4_request`;
+  const q = {
+    "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+    "X-Amz-Credential": encodeURIComponent(credential),
+    "X-Amz-Date": amzDate,
+    "X-Amz-Expires": "300",
+    "X-Amz-SignedHeaders": "host"
+  };
+
+  const canonicalQuery = Object.keys(q).sort().map(k => `${k}=${q[k]}`).join("&");
+  const canonicalHeaders = `host:${host}\n`;
+  const signedHeaders = "host";
+
+  const canonicalRequest = [
+    "GET",
+    canonicalUri,
+    canonicalQuery,
+    canonicalHeaders,
+    "",                     // ligne vide entre headers et signedHeaders
+    signedHeaders,
+    "UNSIGNED-PAYLOAD"
+  ].join("\n");
+
+  const credentialScope = `${shortDate}/${region}/${service}/aws4_request`;
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    credentialScope,
+    await sha256Hex(canonicalRequest)
+  ].join("\n");
+
+  const kSigning = await getSigningKey(secretKey, shortDate, region, service);
+  const signature = toHex(await hmac(kSigning, stringToSign));
+
+  const presignedUrl = `https://${host}${canonicalUri}?${canonicalQuery}&X-Amz-Signature=${signature}`;
+
+  if (debug) {
+    const b64 = s => btoa(unescape(encodeURIComponent(s)));
+    extra.set("x-debug-url", presignedUrl);
+    extra.set("x-debug-cr-b64", b64(canonicalRequest));
+    extra.set("x-debug-sts-b64", b64(stringToSign));
+  }
+
+  // 4) Proxy vers l’URL présignée (aucun header d’auth)
+  const upstream = await fetch(presignedUrl, {
+    method: "GET",
+    cf: { cacheEverything: false }
+  });
+
+  // recopie des en-têtes utiles + cache
+  const respHeaders = new Headers(upstream.headers);
+  for (const [k, v] of extra) respHeaders.set(k, v);
+  respHeaders.set("cache-control", env.CACHE_TILES);
+
+  return new Response(upstream.body, { status: upstream.status, headers: respHeaders });
+}
+
+// ---- utils crypto/date ----
+function toAmzDate(d) {
+  // "YYYYMMDDThhmmssZ"
+  return d.toISOString().replace(/[:-]|\.\d{3}/g, "");
+}
+async function sha256Hex(s) {
+  const enc = new TextEncoder();
+  const buf = await crypto.subtle.digest("SHA-256", enc.encode(s));
+  return toHex(new Uint8Array(buf));
+}
+function toHex(bytes) {
+  return [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+async function hmac(keyBytes, msg) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    typeof keyBytes === "string" ? new TextEncoder().encode(keyBytes) : keyBytes,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(msg));
+  return new Uint8Array(sig);
+}
+async function getSigningKey(secret, date, region, service) {
+  const enc = new TextEncoder();
+  const kDate    = await hmac(enc.encode("AWS4" + secret), date);
+  const kRegion  = await hmac(kDate, region);
+  const kService = await hmac(kRegion, service);
+  const kSigning = await hmac(kService, "aws4_request");
+  return kSigning;
+}

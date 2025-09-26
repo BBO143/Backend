@@ -1,0 +1,65 @@
+import { fetchS3Private } from "./s3-presign.js";
+
+// Petit helper pour entêtes de cache
+function setCaching(h, cacheCtl) {
+  if (cacheCtl) h.set("Cache-Control", cacheCtl);
+}
+
+// Merge headers (sans écraser Content-Length généré par fetch)
+function mergeHeaders(source, extra) {
+  const out = new Headers(source);
+  for (const [k,v] of extra.entries()) out.set(k, v);
+  return out;
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const debug = url.searchParams.get("debug") === "1";
+    const extra = new Headers();
+
+    // 1) Tuiles privées via presign vers S3
+    if (url.pathname.startsWith("/tiles/")) {
+      // tuile signée côté front: exp & sig vérifiés ici ?
+      // (optionnel si tu les veux; pour l’instant on ne bloque pas)
+      const key = url.pathname.replace(/^\/tiles\//, "tiles/");
+      const s3Resp = await fetchS3Private(env, env.SCW_BUCKET_ASSETS, key, extra, debug);
+      setCaching(extra, env.CACHE_TILES);
+      return new Response(s3Resp.body, { status: s3Resp.status, headers: mergeHeaders(s3Resp.headers, extra) });
+    }
+
+    // 2) Glyphs privés via presign (mais public côté front si tu veux ; ici privé)
+    if (url.pathname.startsWith("/fonts/")) {
+      const key = url.pathname.replace(/^\//, ""); // "fonts/..."
+      const s3Resp = await fetchS3Private(env, env.SCW_BUCKET_ASSETS, key, extra, debug);
+      setCaching(extra, env.CACHE_FONTS);
+      return new Response(s3Resp.body, { status: s3Resp.status, headers: mergeHeaders(s3Resp.headers, extra) });
+    }
+
+    // 3) Style JSON : renvoie un style dont les URLs pointent vers ce Worker
+    if (url.pathname === "/style.json") {
+      const style = {
+        version: 8,
+        glyphs: `${env.ASSETS_BASE_URL.replace(/\/+$/,'')}/fonts/{fontstack}/{range}.pbf`.includes("workers.dev")
+          ? `${url.origin}/fonts/{fontstack}/{range}.pbf`
+          : `${url.origin}/fonts/{fontstack}/{range}.pbf`,
+        sources: {
+          openmaptiles: {
+            type: "vector",
+            tiles: [`${url.origin}/tiles/{z}/{x}/{y}.pbf?exp=${Math.floor(Date.now()/1000)+Number(env.TILE_TTL||3600)}&sig=unsigned`],
+            minzoom: 0,
+            maxzoom: 14,
+            attribution: "© OpenStreetMap contributors"
+          }
+        },
+        layers: []
+      };
+      const body = JSON.stringify(style);
+      const h = new Headers({ "content-type": "application/json" });
+      setCaching(h, env.CACHE_STYLE);
+      return new Response(body, { status: 200, headers: h });
+    }
+
+    return new Response("Not found", { status: 404 });
+  }
+};

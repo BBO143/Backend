@@ -1,0 +1,15 @@
+name = "idf-tiles"
+main = "src/index.js"
+compatibility_date = "2024-09-07"
+workers_dev = true
+account_id = "62b13f8a54c6b597aa5a39754d53c7cc"
+
+[vars]
+TILE_TTL = "3600"
+ASSETS_BASE_URL = "https://s3.fr-par.scw.cloud/idf-assets"   # ex: https://s3.fr-par.scw.cloud/idf-assets
+CACHE_TILES = "public,max-age=86400,stale-while-revalidate=604800"
+CACHE_FONTS = "public,max-age=31536000,immutable"
+CACHE_STYLE = "public,max-age=300"
+SCW_REGION = "fr-par"
+SCW_BUCKET_ASSETS = "idf-assets"
+SCW_ENDPOINT_HOST = "idf-assets.s3.fr-par.scw.cloud"

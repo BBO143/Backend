@@ -1,0 +1,201 @@
+import { fetchS3Private } from "./s3-presign.js";
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // petit helper pour répondre JSON / texte
+    const j = (obj, init={}) => new Response(JSON.stringify(obj, null, 2), {headers: {"content-type":"application/json"}, ...init});
+    const t = (txt, init={}) => new Response(txt, init);
+
+    // --- routes ----------------------------
+    if (url.pathname === "/" || url.pathname === "/health") {
+      return j({ ok: true, worker: "idf-tiles", now: new Date().toISOString() });
+    }
+
+    if (url.pathname === "/style.json") {
+      // retourne le style.base.json depuis Scaleway (public ou privé selon ton choix)
+      const base = await fetch(`${env.ASSETS_BASE_URL}/style/style.base.json`, {
+        headers: { "cache-control": env.CACHE_STYLE }
+      });
+      // on le renvoie tel quel
+      return new Response(base.body, { headers: mergeHeaders(base.headers, {"cache-control": env.CACHE_STYLE}) });
+    }
+
+    // proxy glyphs via S3 (privé de bout en bout)
+    // /fonts/{fontstack}/{range}.pbf
+    if (url.pathname.startsWith("/fonts/")) {
+      const s3Key = "fonts" + url.pathname.substring("/fonts".length); // "fonts/...."
+      return await s3GetProxy(env, s3Key, url);
+    }
+
+    // proxy tiles via S3 (privé de bout en bout)
+    // /tiles/{z}/{x}/{y}.pbf?exp=...&sig=...
+    if (url.pathname.startsWith("/tiles/")) {
+      // signature front-end (ton HMAC exp/sig) — pour l’instant on tolère "unsigned" pour debug
+      const exp = Number(url.searchParams.get("exp") || 0);
+      const sig = url.searchParams.get("sig") || "";
+      if (!sig || Number.isNaN(exp) || exp < Math.floor(Date.now()/1000)) {
+        return t("Expired or missing sig", { status: 403 });
+      }
+      if (sig !== "unsigned") {
+        // vérif HMAC front si tu veux activer maintenant
+        const key = await importHmacKey(env.HMAC_KEY);
+        const expected = await hmacHex(key, url.pathname + "?exp=" + exp);
+        if (sig !== expected) return t("Forbidden", { status: 403 });
+      }
+      const s3Key = "tiles" + url.pathname.substring("/tiles".length); // "tiles/z/x/y.pbf"
+      return await s3GetProxy(env, s3Key, url);
+    }
+
+    return t("Not found", { status: 404 });
+  }
+}
+
+// ===== Helpers SigV4 S3 (Scaleway, path-style) ===============================
+
+async function s3GetProxy(env, s3Key, reqUrl) {
+  const debug = reqUrl.searchParams.get("debug") === "1";
+
+  // Dates
+  const amzDate = iso8601NoDelim(new Date());            // YYYYMMDDTHHMMSSZ
+  const shortDate = amzDate.slice(0, 8);                  // YYYYMMDD
+
+  // Constantes SigV4
+  const method = "GET";
+  const service = "s3";
+  const region  = env.SCW_REGION;
+  const host    = env.SCW_ENDPOINT_HOST;                  // ex: s3.fr-par.scw.cloud
+
+  // Chemin S3 path-style: /{bucket}/{key...}
+  const rawPath = `/${env.SCW_BUCKET_ASSETS}/${s3Key}`;   // ex: /idf-assets/tiles/0/0/0.pbf
+  const canonicalUri = rawPath
+    .split("/")
+    .map((seg, i) => i === 0 ? "" : encodeRFC3986(seg))   // garde les "/" tels quels
+    .join("/");
+
+  // Pas de query signée (on fait Header Auth)
+  const canonicalQuery = "";
+
+  // GET sans corps -> SHA256("") constant
+  const payloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+  const canonicalHeaders =
+    `host:${host}\n` +
+    `x-amz-content-sha256:${payloadHash}\n` +
+    `x-amz-date:${amzDate}\n`;
+
+  const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
+
+  const canonicalRequest =
+    `${method}\n${canonicalUri}\n${canonicalQuery}\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+
+  const algorithm = "AWS4-HMAC-SHA256";
+  const credentialScope = `${shortDate}/${region}/${service}/aws4_request`;
+
+  const stringToSign =
+    `${algorithm}\n${amzDate}\n${credentialScope}\n${await sha256Hex(canonicalRequest)}`;
+
+  const signingKey = await getSigningKey(env.SCW_S3_SECRET_ACCESS_KEY, shortDate, region, service);
+  const signature  = await hmacHexRaw(signingKey, stringToSign);
+
+  const authorization =
+    `${algorithm} Credential=${env.SCW_S3_ACCESS_KEY_ID}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  const s3Url = `https://${host}${canonicalUri}`;
+
+  // headers vers S3
+  const s3Headers = {
+    "host": host,
+    "x-amz-date": amzDate,
+    "x-amz-content-sha256": payloadHash,
+    "authorization": authorization,
+  };
+
+  // requête S3
+  const resp = await fetch(s3Url, { method, headers: s3Headers });
+
+  // on renvoie le body + headers S3, et on ajoute nos caches + debug
+  const extra = {
+    "cache-control": guessCacheForPath(s3Key, { env }),
+    "x-debug-proxy": "s3",
+  };
+  if (debug) {
+    extra["x-debug-cr-b64"]  = b64(canonicalRequest);
+    extra["x-debug-sts-b64"] = b64(stringToSign);
+    extra["x-debug-url"]     = s3Url;
+  }
+
+  return new Response(resp.body, {
+    status: resp.status,
+    statusText: resp.statusText,
+    headers: mergeHeaders(resp.headers, extra),
+  });
+}
+
+// ===== utilitaires divers =====================================================
+
+function mergeHeaders(srcHeaders, extraObj) {
+  const h = new Headers(srcHeaders);
+  for (const [k, v] of Object.entries(extraObj)) h.set(k, v);
+  return h;
+}
+
+function iso8601NoDelim(d) {
+  // toISOString -> 2025-09-10T04:03:12.345Z  =>  20250910T040312Z
+  const iso = d.toISOString();
+  return iso.slice(0,19).replace(/[-:]/g,"").replace("T","T")+"Z";
+}
+
+function encodeRFC3986(seg) {
+  // encodeURIComponent + correction des ! * ( ) ~ selon RFC 3986
+  return encodeURIComponent(seg).replace(/[!'()*]/g, c => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+}
+
+function guessCacheForPath(key, { env }) {
+  if (key.startsWith("fonts/")) return env.CACHE_FONTS;
+  if (key.startsWith("tiles/")) return env.CACHE_TILES;
+  if (key.startsWith("style/")) return env.CACHE_STYLE;
+  return "public,max-age=60";
+}
+
+async function sha256Hex(s) {
+  const data = new TextEncoder().encode(s);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+
+async function hmac(keyBytes, msg) {
+  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(msg));
+  return new Uint8Array(sig);
+}
+async function getSigningKey(secret, date, region, service) {
+  const enc = new TextEncoder();
+  const kDate    = await hmac(enc.encode("AWS4" + secret), date);
+  const kRegion  = await hmac(kDate, region);
+  const kService = await hmac(kRegion, service);
+  const kSigning = await hmac(kService, "aws4_request");
+  return kSigning;
+}
+async function hmacHexRaw(rawKeyBytes, msg) {
+  const sig = await hmac(rawKeyBytes, msg);
+  return [...sig].map(b => b.toString(16).padStart(2,"0")).join("");
+}
+
+async function importHmacKey(secret) {
+  const raw = new TextEncoder().encode(secret);
+  return crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+}
+async function hmacHex(key, msg) {
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(msg));
+  const bytes = new Uint8Array(mac);
+  return [...bytes].map(b => b.toString(16).padStart(2,"0")).join("");
+}
+
+function b64(s) {
+  // TextEncoder -> base64
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}

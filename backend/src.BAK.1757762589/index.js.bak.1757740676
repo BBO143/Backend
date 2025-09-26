@@ -1,0 +1,135 @@
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const debug = url.searchParams.get("debug") === "1";
+    const extra = new Headers();
+
+    // Routes
+    if (url.pathname === "/style.json") {
+      // style: retourne glyphs via Worker et tiles signées par le Worker
+      const style = {
+        version: 8,
+        glyphs: `${new URL(request.url).origin}/fonts/{fontstack}/{range}.pbf`,
+        sources: {
+          openmaptiles: {
+            type: "vector",
+            tiles: [
+              `${new URL(request.url).origin}/tiles/{z}/{x}/{y}.pbf?exp=${Math.floor(Date.now()/1000)+Number(env.TILE_TTL||3600)}&sig=unsigned`
+            ],
+            minzoom: 0,
+            maxzoom: 14,
+            attribution: "© OpenStreetMap contributors"
+          }
+        },
+        layers: []
+      };
+      return new Response(JSON.stringify(style), {
+        headers: { "content-type": "application/json", "cache-control": env.CACHE_STYLE || "public,max-age=300" }
+      });
+    }
+
+    if (url.pathname.startsWith("/fonts/")) {
+      // fonts publiques: simple proxy vers le bucket public (lecture anonyme CF)
+      const upstream = `${env.ASSETS_BASE_URL.replace(/\/$/,"")}${url.pathname}`;
+      const r = await fetch(upstream, { cf: { cacheEverything: true } });
+      const h = new Headers(r.headers);
+      h.set("cache-control", env.CACHE_FONTS || "public,max-age=31536000,immutable");
+      return new Response(r.body, { status: r.status, headers: h });
+    }
+
+    if (url.pathname.startsWith("/tiles/")) {
+      // Lecture privée S3 via SigV4 en en-têtes (Authorization)
+      // 1) Construit la clé et l’URL endpoint
+      const keyPath = url.pathname.slice(1); // "tiles/.."
+      const host = env.SCW_ENDPOINT_HOST;   // ex: "idf-assets.s3.fr-par.scw.cloud"
+      const method = "GET";
+      const canonicalUri = `/${keyPath}`;
+      const amzDate = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z"); // YYYYMMDDThhmmssZ
+      const shortDate = amzDate.slice(0,8);
+      const service = "s3";
+      const region = env.SCW_REGION;
+      const accessKey = env.SCW_S3_ACCESS_KEY_ID;
+      const secretKey = env.SCW_S3_SECRET_ACCESS_KEY;
+
+      // 2) Canonical request (header-signing)
+      const payloadHash = "UNSIGNED-PAYLOAD";
+      const canonicalQuery = ""; // aucun paramètre signé en query
+      const canonicalHeaders = `host:${host}\n` + `x-amz-content-sha256:${payloadHash}\n` + `x-amz-date:${amzDate}\n`;
+      const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
+      const canonicalRequest =
+        `${method}\n${canonicalUri}\n${canonicalQuery}\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+
+      // 3) StringToSign + clé de signature
+      const algorithm = "AWS4-HMAC-SHA256";
+      const credentialScope = `${shortDate}/${region}/${service}/aws4_request`;
+      const stringToSign = [
+        algorithm,
+        amzDate,
+        credentialScope,
+        await sha256Hex(canonicalRequest)
+      ].join("\n");
+
+      const signingKey = await getSigningKey(secretKey, shortDate, region, service);
+      const signature = await hmacHex(signingKey, stringToSign);
+
+      // 4) Requête vers S3 avec Authorization header
+      const authorization =
+        `${algorithm} Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+      const s3Url = `https://${host}${canonicalUri}`;
+      const s3Req = new Request(s3Url, {
+        method,
+        headers: {
+          "host": host,
+          "x-amz-date": amzDate,
+          "x-amz-content-sha256": payloadHash,
+          "authorization": authorization
+        }
+      });
+
+      if (debug) {
+        const b64 = s => btoa(unescape(encodeURIComponent(s)));
+        extra.set("x-debug-url", s3Url);
+        extra.set("x-debug-cr-b64", b64(canonicalRequest));
+        extra.set("x-debug-sts-b64", b64(stringToSign));
+      }
+
+      const r = await fetch(s3Req, { cf: { cacheEverything: false } });
+      const h = new Headers(r.headers);
+      h.set("cache-control", env.CACHE_TILES || "public,max-age=86400,stale-while-revalidate=604800");
+      for (const [k,v] of extra) h.set(k,v);
+      return new Response(r.body, { status: r.status, headers: h });
+    }
+
+    return new Response("Not found", { status: 404 });
+  }
+};
+
+// === utils ===
+async function sha256Hex(s) {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(d)].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+async function hmac(keyBytes, msg) {
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    keyBytes,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(msg));
+  return new Uint8Array(sig);
+}
+async function hmacHex(keyBytes, msg) {
+  const bytes = await hmac(keyBytes, msg);
+  return [...bytes].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+async function getSigningKey(secret, date, region, service) {
+  const enc = new TextEncoder();
+  const kDate    = await hmac(enc.encode("AWS4" + secret), date);
+  const kRegion  = await hmac(kDate, region);
+  const kService = await hmac(kRegion, service);
+  const kSigning = await hmac(kService, "aws4_request");
+  return kSigning;
+}

@@ -1,0 +1,377 @@
+{
+  "version": 8,
+  "name": "IDF Rich v2 (esthétique)",
+  "sources": {
+    "vector-tiles": {
+      "type": "vector",
+      "tiles": [
+        "https://idf-tiles.idf-maps-007.workers.dev/tiles/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 14
+    }
+  },
+  "sprite": "https://idf-tiles.idf-maps-007.workers.dev/sprite",
+  "glyphs": "https://idf-tiles.idf-maps-007.workers.dev/fonts/{fontstack}/{range}.pbf",
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "#F6F7F9"
+      }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "composite",
+      "source-layer": "water",
+      "paint": {
+        "fill-color": "#2B78C6"
+      }
+    },
+    {
+      "id": "park",
+      "type": "fill",
+      "source": "composite",
+      "source-layer": "landuse",
+      "filter": [
+        "==",
+        "class",
+        "park"
+      ],
+      "paint": {
+        "fill-color": "#CFE8CF"
+      }
+    },
+    {
+      "id": "building",
+      "type": "fill",
+      "source": "composite",
+      "source-layer": "building",
+      "paint": {
+        "fill-color": "#D9D9D9",
+        "fill-outline-color": "#BEBEBE"
+      }
+    },
+    {
+      "id": "road-motorway-casing",
+      "type": "line",
+      "source": "vector-tiles",
+      "source-layer": "road",
+      "filter": [
+        "==",
+        "class",
+        "motorway"
+      ],
+      "paint": {
+        "line-color": "#c8c8c8",
+        "line-width": 4
+      }
+    },
+    {
+      "id": "road-motorway",
+      "type": "line",
+      "source": "vector-tiles",
+      "source-layer": "road",
+      "filter": [
+        "==",
+        "class",
+        "motorway"
+      ],
+      "paint": {
+        "line-color": "#f3a15f",
+        "line-width": 2.5
+      }
+    },
+    {
+      "id": "road-primary",
+      "type": "line",
+      "source": "vector-tiles",
+      "source-layer": "road",
+      "filter": [
+        "==",
+        "class",
+        "primary"
+      ],
+      "paint": {
+        "line-color": "#ffcc66",
+        "line-width": 2
+      }
+    },
+    {
+      "id": "road-secondary",
+      "type": "line",
+      "source": "vector-tiles",
+      "source-layer": "road",
+      "filter": [
+        "==",
+        "class",
+        "secondary"
+      ],
+      "paint": {
+        "line-color": "#ffd98a",
+        "line-width": 1.5
+      }
+    },
+    {
+      "id": "road-street",
+      "type": "line",
+      "source": "vector-tiles",
+      "source-layer": "road",
+      "filter": [
+        "in",
+        "class",
+        "street",
+        "residential",
+        "service"
+      ],
+      "paint": {
+        "line-color": "#ffffff",
+        "line-width": 1
+      }
+    },
+    {
+      "id": "poi-icons",
+      "type": "symbol",
+      "source": "vector-tiles",
+      "source-layer": "poi_label",
+      "layout": {
+        "icon-image": "poi-15",
+        "icon-size": 1,
+        "text-field": "{name}",
+        "text-size": 11,
+        "text-offset": [
+          0,
+          0.8
+        ],
+        "text-anchor": "top"
+      },
+      "paint": {
+        "text-color": "#2b2b2b",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 1
+      }
+    },
+    {
+      "id": "place-labels",
+      "type": "symbol",
+      "source": "vector-tiles",
+      "source-layer": "place_label",
+      "layout": {
+        "text-field": "{name}",
+        "text-size": 12
+      },
+      "paint": {
+        "text-color": "#111111",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 1
+      }
+    },
+    {
+      "id": "waterway",
+      "type": "line",
+      "source": "composite",
+      "source-layer": "waterway",
+      "paint": {
+        "line-color": "#2B78C6",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          0.2,
+          12,
+          1.2,
+          14,
+          2.0
+        ]
+      }
+    },
+    {
+      "id": "boundary-admin",
+      "type": "line",
+      "source": "composite",
+      "source-layer": "boundary",
+      "paint": {
+        "line-color": "#B8C0CC",
+        "line-width": 1,
+        "line-dasharray": [
+          2,
+          2
+        ]
+      }
+    },
+    {
+      "id": "road-casing",
+      "type": "line",
+      "source": "composite",
+      "source-layer": "road",
+      "paint": {
+        "line-color": "#FFFFFF",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          6,
+          0.6,
+          10,
+          2.0,
+          12,
+          3.2,
+          14,
+          5.5,
+          16,
+          9.0
+        ]
+      }
+    },
+    {
+      "id": "road-core",
+      "type": "line",
+      "source": "composite",
+      "source-layer": "road",
+      "paint": {
+        "line-color": [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          "motorway",
+          "#4A6F8E",
+          "trunk",
+          "#6F8FA6",
+          "primary",
+          "#8FA3B8",
+          "secondary",
+          "#AEB8C2",
+          "tertiary",
+          "#BFC6CD",
+          "#CFCFD3"
+        ],
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          6,
+          0.4,
+          10,
+          1.4,
+          12,
+          2.2,
+          14,
+          3.6,
+          16,
+          6.0
+        ]
+      }
+    },
+    {
+      "id": "place-label",
+      "type": "symbol",
+      "source": "composite",
+      "source-layer": "place_label",
+      "layout": {
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "name"
+          ],
+          [
+            "get",
+            "name_en"
+          ],
+          [
+            "get",
+            "name:latin"
+          ]
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          3,
+          10,
+          6,
+          12,
+          10,
+          16,
+          14,
+          20
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-letter-spacing": 0.01
+      },
+      "paint": {
+        "text-color": "#2E3C48",
+        "text-halo-color": "#FFFFFF",
+        "text-halo-width": 1.2,
+        "text-halo-blur": 0.2
+      }
+    },
+    {
+      "id": "road-label",
+      "type": "symbol",
+      "source": "composite",
+      "source-layer": "road",
+      "minzoom": 12,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "name"
+          ],
+          [
+            "get",
+            "ref"
+          ]
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          12,
+          10,
+          14,
+          12,
+          16,
+          14
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ]
+      },
+      "paint": {
+        "text-color": "#445566",
+        "text-halo-color": "#FFFFFF",
+        "text-halo-width": 1.1
+      }
+    }
+  ],
+  "metadata": {}
+}
