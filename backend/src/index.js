@@ -52,7 +52,7 @@ export default {
   // --- BEGIN data proxy route ---
   {
     const url = new URL(req.url);
-    if (url.pathname.startsWith(\x27/data/\x27)) {
+    if (url.pathname.startsWith('/data/')) {
       return proxyDataFromS3(req, env, url);
     }
   }
