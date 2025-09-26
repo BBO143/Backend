@@ -182,3 +182,43 @@ async function proxyDataFromS3(request, env, url) {
     headers: respHeaders
   });
 }
+
+// === BEGIN data proxy (signed) ===
+async function fetchDataFromS3Signed(request, env, url) {
+  // Clef S3 après /data/
+  const key = url.pathname.replace(/^\/data\//, '');
+  const parts = key.split('/').map(encodeURIComponent).join('/');
+  // Base privée (ex: https://s3.fr-par.scw.cloud/idf-maps-storage)
+  const base = String(env.ORIGIN_BASE_PRIVATE || '').replace(/\/$/, '');
+  const target = `${base}/data/${parts}`;
+
+  // Forward de quelques headers utiles (Range/ETag/Enc)
+  const fwd = new Headers();
+  for (const h of ['range','if-none-match','if-modified-since','accept-encoding']) {
+    const v = request.headers.get(h);
+    if (v) fwd.set(h, v);
+  }
+
+  // IMPORTANT : utiliser la fonction de présignature déjà importée
+  // (import { fetchS3Private } from "./s3-presign.js";)
+  const upstream = await fetchS3Private(new Request(target, { method: 'GET', headers: fwd }), env);
+
+  // Normalisation des headers (CORS + cache + type JSON si manquant)
+  const h = new Headers(upstream.headers);
+  h.set('access-control-allow-origin', '*');
+  if (!h.has('cache-control')) {
+    h.set('cache-control', 'public, max-age=86400, stale-while-revalidate=604800, no-transform');
+  }
+  if (!h.has('content-type')) {
+    h.set('content-type', 'application/json; charset=utf-8');
+  }
+  // Trace de la cible (souvent déjà ajoutée par fetchS3Private, on force au besoin)
+  if (!h.has('x-debug-url')) h.set('x-debug-url', target);
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: h
+  });
+}
+// === END data proxy (signed) ===
